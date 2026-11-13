@@ -217,25 +217,52 @@ today = datetime.now(KST).date()
 day = st.date_input("날짜", value=today, max_value=today, format="YYYY-MM-DD")
 
 
-def small_chart(df, field, title, color, domain=None, band=None, rule=None, rule_text=None, height=200):
-    base = alt.Chart(df).encode(x=alt.X("시각:T", title=None, axis=alt.Axis(format="%H:%M")))
-    y = alt.Y(f"{field}:Q", title=title,
-              scale=alt.Scale(domain=domain) if domain else alt.Scale(zero=False))
-    layers = []
-    if band:
-        layers.append(alt.Chart(pd.DataFrame({"a": [band[0]], "b": [band[1]]}))
-                      .mark_rect(opacity=0.12, color="#2A9D8F").encode(y="a:Q", y2="b:Q"))
-    layers.append(base.mark_line(color=color, strokeWidth=2,
-                                 point=alt.OverlayMarkDef(size=14, color=color)).encode(
-        y=y, tooltip=[alt.Tooltip("시각:T", format="%H:%M"), alt.Tooltip("co2:Q", title="이산화탄소 ppm"),
-                      alt.Tooltip("temp:Q", title="온도 ℃"), alt.Tooltip("hum:Q", title="습도 %")]))
-    if rule:
-        layers.append(alt.Chart(pd.DataFrame({"y": [rule]})).mark_rule(strokeDash=[6, 4], color="#13233F")
-                      .encode(y="y:Q"))
-        layers.append(alt.Chart(pd.DataFrame({"y": [rule], "t": [rule_text]})).mark_text(
-            align="left", dx=4, dy=-8, color="#13233F", fontWeight="bold").encode(
-            y="y:Q", text="t:N", x=alt.value(4)))
-    st.altair_chart(alt.layer(*layers).properties(height=height), width="stretch")
+SERIES = [("이산화탄소 (ppm)", "co2", "#E4572E", None, None),
+          ("온도 (℃)", "temp", "#E08A00", 18, 20),
+          ("습도 (%)", "hum", "#2F6FB0", 30, 80)]
+
+
+def combo_chart(df):
+    """세 값을 위아래로 붙인 한 덩어리 그래프 + 같이 움직이는 세로선"""
+    parts = []
+    for name, col, color, lo, hi in SERIES:
+        d = df[["시각", col]].rename(columns={col: "값"})
+        d["항목"], d["색"] = name, color
+        d["lo"], d["hi"] = lo, hi
+        parts.append(d)
+    long = pd.concat(parts, ignore_index=True)
+    order = [s[0] for s in SERIES]
+
+    hover = alt.selection_point(fields=["시각"], nearest=True, on="pointerover",
+                                empty=False, clear="pointerout")
+    x = alt.X("시각:T", title=None, axis=alt.Axis(format="%H:%M", grid=False))
+    base = alt.Chart().encode(x=x)
+
+    band = base.mark_area(opacity=0.12, color="#2A9D8F").encode(
+        y=alt.Y("lo:Q", title=None), y2="hi:Q").transform_filter("datum.lo != null")
+    limit = alt.Chart().mark_rule(strokeDash=[6, 4], color="#13233F").encode(
+        y="y:Q").transform_filter(f"datum.항목 == '{order[0]}'").transform_calculate(y=str(OPEN_AT))
+    line = base.mark_line(strokeWidth=2).encode(
+        y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False)),
+        color=alt.Color("색:N", scale=None), tooltip=alt.value(None))
+    dots = base.mark_point(size=60, filled=True, opacity=0).encode(
+        y="값:Q", color=alt.Color("색:N", scale=None), tooltip=alt.value(None)).add_params(hover)
+    rule = base.mark_rule(color="#9CA3AF").transform_filter(hover)
+    on = base.mark_point(size=70, filled=True).encode(
+        y="값:Q", color=alt.Color("색:N", scale=None)).transform_filter(hover)
+    label = base.mark_text(align="left", dx=8, dy=-10, fontSize=13, fontWeight="bold").encode(
+        y="값:Q", text=alt.Text("값:Q", format=",.1~f"),
+        color=alt.Color("색:N", scale=None)).transform_filter(hover)
+    clock = base.mark_text(align="left", dx=8, dy=8, fontSize=11, color="#6B7280").encode(
+        y="값:Q", text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover)
+
+    chart = alt.layer(band, limit, line, dots, rule, on, label, clock, data=long).properties(
+        width=640, height=150).facet(
+        row=alt.Row("항목:N", sort=order, title=None,
+                    header=alt.Header(labelAngle=0, labelAlign="left", labelAnchor="start",
+                                      labelOrient="top", labelFontSize=14, labelFontWeight="bold")),
+        spacing=6).resolve_scale(y="independent")
+    st.altair_chart(chart, width="stretch")
 
 
 @st.fragment(run_every="60s")
@@ -261,13 +288,9 @@ def day_chart(day):
     b.metric("온도 범위", f"{df.temp.min():.1f}~{df.temp.max():.1f}℃")
     c.metric("습도 범위", f"{df.hum.min():.0f}~{df.hum.max():.0f}%")
 
-    st.markdown("**이산화탄소 (ppm)**")
-    small_chart(df, "co2", None, "#E4572E", domain=[350, max(1100, int(df.co2.max() * 1.1))],
-                rule=OPEN_AT, rule_text="학교 기준 1,000ppm", height=260)
-    st.markdown("**온도 (℃)** · 초록 띠 = 학교 난방 기준 18~20℃")
-    small_chart(df, "temp", None, "#E08A00", band=(18, 20))
-    st.markdown("**습도 (%)** · 초록 띠 = 학교 기준 30~80%")
-    small_chart(df, "hum", None, "#2F6FB0", band=(30, 80))
+    combo_chart(df)
+    st.caption("마우스(손가락)를 그래프에 올리면 그 시각의 세 값이 한 번에 보여요.  \n"
+               "초록 띠 = 학교 기준 (온도 18\\~20℃, 습도 30\\~80%) · 점선 = 이산화탄소 1,000ppm")
 
     with st.expander("표로 보기"):
         st.dataframe(df[["시각", "co2", "temp", "hum"]].rename(
@@ -278,6 +301,6 @@ def day_chart(day):
 day_chart(day)
 
 st.divider()
-st.caption("기준: 학교보건법 시행규칙 — 이산화탄소 1,000ppm 이하, 난방 온도 18~20℃, 습도 30~80%  \n"
+st.caption("기준: 학교보건법 시행규칙 — 이산화탄소 1,000ppm 이하, 난방 온도 18\\~20℃, 습도 30\\~80%  \n"
            "바깥 공기: 공공데이터포털 — 한국환경공단 에어코리아, 기상청 초단기실황  \n"
            "만든 사람: 충북도립대학교 컴퓨터드론과 팀 건서호진 (임건호 · 장서진)")
