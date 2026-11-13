@@ -299,7 +299,51 @@ def combo_chart(df, out):
     st.altair_chart(chart, width="stretch")
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def outdoor_24h(key, anchor):
+    """공공데이터에서 최근 24시간 바깥 값을 직접 가져오기 (기상청 매시 + 에어코리아)"""
+    from concurrent.futures import ThreadPoolExecutor
+    top = datetime.fromisoformat(anchor)
+
+    def one(h):
+        t = top - timedelta(hours=h)
+        try:
+            r = requests.get(
+                "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst",
+                params={"serviceKey": key, "pageNo": 1, "numOfRows": 10, "dataType": "JSON",
+                        "base_date": f"{t:%Y%m%d}", "base_time": f"{t:%H}00", "nx": NX, "ny": NY},
+                timeout=10)
+            v = {i["category"]: float(i["obsrValue"]) for i in r.json()["response"]["body"]["items"]["item"]}
+            return {"시각": t.replace(tzinfo=None), "temp": v.get("T1H"), "hum": v.get("REH")}
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(8) as ex:
+        wx = [w for w in ex.map(one, range(24)) if w]
+    o = pd.DataFrame(wx, columns=["시각", "temp", "hum"])
+
+    try:
+        r = requests.get(
+            "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
+            params={"serviceKey": key, "returnType": "json", "numOfRows": 24, "pageNo": 1,
+                    "stationName": STATION, "dataTerm": "DAILY", "ver": "1.0"}, timeout=10)
+        pm = []
+        for it in r.json()["response"]["body"]["items"]:
+            day, hm = it["dataTime"].split()
+            t = datetime.strptime(day, "%Y-%m-%d") + timedelta(hours=int(hm[:2]))
+            num = lambda v: float(v) if str(v).replace(".", "", 1).isdigit() else None
+            pm.append({"시각": t, "pm10": num(it.get("pm10Value")), "pm25": num(it.get("pm25Value"))})
+        p = pd.DataFrame(pm, columns=["시각", "pm10", "pm25"])
+    except Exception:
+        p = pd.DataFrame(columns=["시각", "pm10", "pm25"])
+    o = o.merge(p, on="시각", how="outer") if not o.empty or not p.empty else \
+        pd.DataFrame(columns=["시각", "temp", "hum", "pm10", "pm25"])
+    return o.sort_values("시각").reset_index(drop=True)
+
+
 def outdoor_rows(start, end):
+    """바깥 값: Supabase에 쌓인 기록 → 없으면 공공데이터에서 최근 24시간 직접"""
+    cols = ["시각", "temp", "hum", "pm10", "pm25"]
     try:
         rows = get("outdoor?select=measured_at,temp,hum,pm10,pm25"
                    f"&measured_at=gte.{start.isoformat().replace('+', '%2B')}"
@@ -307,12 +351,20 @@ def outdoor_rows(start, end):
                    "&order=measured_at.asc")
     except Exception:
         rows = []
-    o = pd.DataFrame(rows, columns=["measured_at", "temp", "hum", "pm10", "pm25"])
+    o = pd.DataFrame(rows, columns=["measured_at"] + cols[1:])
     if not o.empty:
         o["시각"] = pd.to_datetime(o["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
-    else:
-        o["시각"] = pd.Series(dtype="datetime64[ns]")
-    return o
+        return o[cols]
+    key = secret("DATA_GO_KR_KEY")
+    if not key or end < datetime.now(KST) - timedelta(hours=25):
+        return pd.DataFrame(columns=cols)
+    anchor = (datetime.now(KST) - timedelta(minutes=45)).replace(minute=0, second=0, microsecond=0)
+    o = outdoor_24h(key, anchor.isoformat())
+    if o.empty:
+        return pd.DataFrame(columns=cols)
+    o["시각"] = pd.to_datetime(o["시각"])
+    lo, hi = start.replace(tzinfo=None), end.replace(tzinfo=None)
+    return o[(o["시각"] >= lo) & (o["시각"] < hi)][cols].reset_index(drop=True)
 
 
 @st.fragment(run_every="60s")
