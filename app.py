@@ -217,10 +217,11 @@ today = datetime.now(KST).date()
 day = st.date_input("날짜", value=today, max_value=today, format="YYYY-MM-DD")
 
 
-SERIES = [  # 이름, 열, 색, 기준 아래, 기준 위, 최소 눈금 폭
-    ("이산화탄소 (ppm)", "co2", "#E4572E", None, None, 60),
-    ("온도 (℃)", "temp", "#E08A00", 18, 20, 2),
-    ("습도 (%)", "hum", "#2F6FB0", 30, 80, 6),
+SERIES = [  # 이름, 실내 열, 바깥 열, 색, 기준 아래, 기준 위, 최소 눈금 폭
+    ("이산화탄소 (ppm)", "co2", None, "#E4572E", None, None, 60),
+    ("온도 (℃)", "temp", "temp", "#E08A00", 18, 20, 2),
+    ("습도 (%)", "hum", "hum", "#2F6FB0", 30, 80, 6),
+    ("바깥 초미세먼지 (㎍/㎥)", None, "pm25", "#7B61C9", 0, 15, 10),
 ]
 
 
@@ -234,45 +235,84 @@ def fit(v, min_span):
     return [lo - pad, hi + pad]
 
 
-def combo_chart(df):
-    """세 값을 위아래로 붙인 한 덩어리 그래프 + 같이 움직이는 세로선"""
+def combo_chart(df, out):
+    """실내(실선)·바깥(점선)을 위아래로 붙인 한 덩어리 그래프 + 같이 움직이는 세로선"""
     hover = alt.selection_point(fields=["시각"], nearest=True, on="pointerover",
                                 empty=False, clear="pointerout", name="hover")
+    panels = [p for p in SERIES if p[1] or (not out.empty and out[p[2]].notna().any())]
     rows = []
-    for i, (name, col, color, lo, hi, span) in enumerate(SERIES):
-        last = i == len(SERIES) - 1
-        dom = fit(df[col], span)
+    for i, (name, col, oc, color, lo, hi, span) in enumerate(panels):
+        last = i == len(panels) - 1
+        has_out = oc is not None and not out.empty and out[oc].notna().any()
+        vals = [df[col]] if col else []
+        if has_out:
+            vals.append(out[oc].dropna())
+        dom = fit(pd.concat(vals), span)
+        if col == "co2" and dom[1] < OPEN_AT <= dom[1] * 1.15:
+            dom[1] = OPEN_AT * 1.03
         x = alt.X("시각:T", title=None, axis=alt.Axis(
             format="%H:%M", grid=False, labels=last, ticks=last, domain=last))
         sc = alt.Scale(domain=dom, nice=False, zero=False)
-        y = alt.Y(f"{col}:Q", title=None, scale=sc, axis=alt.Axis(tickCount=4, gridOpacity=0.4))
+        yax = alt.Axis(tickCount=4, gridOpacity=0.4)
         base = alt.Chart(df).encode(x=x)
         layers = []
-        if lo is not None:   # 학교 기준 띠 (그래프 범위 안에 들어온 만큼만)
+        if lo is not None and hi > dom[0] and lo < dom[1]:   # 학교 기준 띠 (범위 안에 든 만큼만)
             layers.append(base.mark_area(opacity=0.13, color="#2A9D8F", clip=True).encode(
-                y=alt.YDatum(max(lo, dom[0]), scale=sc, title=None), y2=alt.Y2Datum(min(hi, dom[1]))))
+                y=alt.YDatum(max(lo, dom[0]), scale=sc, title=None, axis=yax),
+                y2=alt.Y2Datum(min(hi, dom[1]))))
         if col == "co2" and dom[1] >= OPEN_AT:
-            layers.append(base.mark_rule(strokeDash=[6, 4], color="#D64545").encode(y=alt.YDatum(OPEN_AT, scale=sc, title=None)))
+            layers.append(base.mark_rule(strokeDash=[6, 4], color="#D64545").encode(
+                y=alt.YDatum(OPEN_AT, scale=sc, title=None, axis=yax)))
+        if has_out:   # 바깥 = 점선
+            layers.append(alt.Chart(out).mark_line(
+                interpolate="monotone", strokeWidth=2.5 if not col else 2, color=color, clip=True,
+                strokeDash=[] if not col else [6, 4], opacity=1 if not col else 0.75).encode(
+                x=x, y=alt.Y(f"{oc}:Q", title=None, scale=sc, axis=yax)))
+        if col:       # 실내 = 실선 + 색 채움
+            y = alt.Y(f"{col}:Q", title=None, scale=sc, axis=yax)
+            layers += [
+                base.mark_area(interpolate="monotone", clip=True, color=color, opacity=0.16).encode(
+                    y=y, y2=alt.Y2Datum(dom[0])),
+                base.mark_line(interpolate="monotone", strokeWidth=2.5, color=color, clip=True).encode(y=y),
+            ]
+        # 마우스 올린 시각 표시 (세로선 + 점 + 숫자)
+        hy = alt.Y(f"{col or 'o_' + oc}:Q", title=None, scale=sc, axis=yax)
         layers += [
-            base.mark_area(interpolate="monotone", clip=True, color=alt.Gradient(
-                gradient="linear", x1=1, x2=1, y1=1, y2=0,
-                stops=[alt.GradientStop(color=color, offset=0), alt.GradientStop(color=color, offset=1)]),
-                opacity=0.18).encode(y=y, y2=alt.Y2Datum(dom[0])),
-            base.mark_line(interpolate="monotone", strokeWidth=2.5, color=color, clip=True).encode(y=y),
-            base.mark_point(size=80, opacity=0).encode(y=y, tooltip=alt.value(None)).add_params(hover),
+            base.mark_point(size=80, opacity=0).encode(y=hy, tooltip=alt.value(None)).add_params(hover),
             base.mark_rule(color="#9CA3AF").transform_filter(hover),
-            base.mark_point(size=90, filled=True, color=color).encode(y=y).transform_filter(hover),
+            base.mark_point(size=90, filled=True, color=color).encode(y=hy).transform_filter(hover),
             base.mark_text(align="left", dx=9, dy=-12, fontSize=15, fontWeight="bold", color=color).encode(
-                y=y, text=alt.Text(f"{col}:Q", format=",.1~f")).transform_filter(hover),
+                y=hy, text=alt.Text(f"{col or 'o_' + oc}:Q", format=",.1~f")).transform_filter(hover),
         ]
+        if col and has_out:
+            layers.append(base.mark_text(align="left", dx=9, dy=12, fontSize=12, color=color, opacity=0.85)
+                          .encode(y=hy, text="t:N").transform_filter(hover)
+                          .transform_filter(f"isValid(datum.o_{oc})")
+                          .transform_calculate(t=f"'바깥 ' + format(datum.o_{oc}, '.1f')"))
         if i == 0:
-            layers.append(base.mark_text(align="left", dx=9, dy=8, fontSize=12, color="#6B7280").encode(
-                y=y, text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover))
+            layers.append(base.mark_text(align="left", dx=9, dy=-30, fontSize=12, color="#6B7280").encode(
+                y=hy, text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover))
         rows.append(alt.layer(*layers).properties(
-            width=640, height=140 if not last else 150,
+            width=640, height=150 if last else 140,
             title=alt.TitleParams(name, anchor="start", fontSize=14, color=color, offset=4)))
     chart = alt.vconcat(*rows, spacing=10).resolve_scale(x="shared").configure_view(stroke=None)
     st.altair_chart(chart, width="stretch")
+
+
+def outdoor_rows(start, end):
+    try:
+        rows = get("outdoor?select=measured_at,temp,hum,pm10,pm25"
+                   f"&measured_at=gte.{start.isoformat().replace('+', '%2B')}"
+                   f"&measured_at=lt.{end.isoformat().replace('+', '%2B')}"
+                   "&order=measured_at.asc")
+    except Exception:
+        rows = []
+    o = pd.DataFrame(rows, columns=["measured_at", "temp", "hum", "pm10", "pm25"])
+    if not o.empty:
+        o["시각"] = pd.to_datetime(o["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+    else:
+        o["시각"] = pd.Series(dtype="datetime64[ns]")
+    return o
 
 
 @st.fragment(run_every="60s")
@@ -292,15 +332,22 @@ def day_chart(day):
         st.info("이 날은 기록이 없어요.")
         return
     df["시각"] = pd.to_datetime(df["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+    out = outdoor_rows(start, end)
+    if not out.empty:   # 실내 각 시각에 그때의 바깥 값(1시간 단위)을 붙임
+        o = out[["시각", "temp", "hum", "pm25"]].rename(
+            columns={"temp": "o_temp", "hum": "o_hum", "pm25": "o_pm25"})
+        df = pd.merge_asof(df.sort_values("시각"), o.sort_values("시각"), on="시각",
+                           direction="backward", tolerance=pd.Timedelta("90min"))
 
     a, b, c = st.columns(3)
     a.metric("이산화탄소 최고", f"{df.co2.max():,} ppm", help=f"{df.loc[df.co2.idxmax(), '시각']:%H:%M}")
     b.metric("온도 범위", f"{df.temp.min():.1f}~{df.temp.max():.1f}℃")
     c.metric("습도 범위", f"{df.hum.min():.0f}~{df.hum.max():.0f}%")
 
-    combo_chart(df)
-    st.caption("마우스(손가락)를 그래프에 올리면 그 시각의 세 값이 한 번에 보여요.  \n"
-               "그래프 높이는 그날 값에 맞춰 자동으로 늘었다 줄었다 해요. 초록 띠 = 학교 기준 · 빨간 점선 = 1,000ppm")
+    combo_chart(df, out)
+    st.caption("**실선 = 실내 · 점선 = 바깥** (기상청·에어코리아, 1시간마다)  \n"
+               "마우스(손가락)를 그래프에 올리면 그 시각의 값이 한 번에 보여요.  \n"
+               "초록 띠 = 학교 기준 (초미세먼지는 '좋음' 15 이하) · 빨간 점선 = 이산화탄소 1,000ppm")
 
     with st.expander("표로 보기"):
         st.dataframe(df[["시각", "co2", "temp", "hum"]].rename(
