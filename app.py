@@ -217,51 +217,61 @@ today = datetime.now(KST).date()
 day = st.date_input("날짜", value=today, max_value=today, format="YYYY-MM-DD")
 
 
-SERIES = [("이산화탄소 (ppm)", "co2", "#E4572E", None, None),
-          ("온도 (℃)", "temp", "#E08A00", 18, 20),
-          ("습도 (%)", "hum", "#2F6FB0", 30, 80)]
+SERIES = [  # 이름, 열, 색, 기준 아래, 기준 위, 최소 눈금 폭
+    ("이산화탄소 (ppm)", "co2", "#E4572E", None, None, 60),
+    ("온도 (℃)", "temp", "#E08A00", 18, 20, 2),
+    ("습도 (%)", "hum", "#2F6FB0", 30, 80, 6),
+]
+
+
+def fit(v, min_span):
+    """값이 그래프 높이를 꽉 채우도록 위아래 범위를 데이터에 딱 맞춤"""
+    lo, hi = float(v.min()), float(v.max())
+    if hi - lo < min_span:
+        mid = (hi + lo) / 2
+        lo, hi = mid - min_span / 2, mid + min_span / 2
+    pad = (hi - lo) * 0.12
+    return [lo - pad, hi + pad]
 
 
 def combo_chart(df):
     """세 값을 위아래로 붙인 한 덩어리 그래프 + 같이 움직이는 세로선"""
-    parts = []
-    for name, col, color, lo, hi in SERIES:
-        d = df[["시각", col]].rename(columns={col: "값"})
-        d["항목"], d["색"] = name, color
-        d["lo"], d["hi"] = lo, hi
-        parts.append(d)
-    long = pd.concat(parts, ignore_index=True)
-    order = [s[0] for s in SERIES]
-
     hover = alt.selection_point(fields=["시각"], nearest=True, on="pointerover",
-                                empty=False, clear="pointerout")
-    x = alt.X("시각:T", title=None, axis=alt.Axis(format="%H:%M", grid=False))
-    base = alt.Chart().encode(x=x)
-
-    band = base.mark_area(opacity=0.12, color="#2A9D8F").encode(
-        y=alt.Y("lo:Q", title=None), y2="hi:Q").transform_filter("datum.lo != null")
-    limit = alt.Chart().mark_rule(strokeDash=[6, 4], color="#13233F").encode(
-        y="y:Q").transform_filter(f"datum.항목 == '{order[0]}'").transform_calculate(y=str(OPEN_AT))
-    line = base.mark_line(strokeWidth=2).encode(
-        y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False)),
-        color=alt.Color("색:N", scale=None), tooltip=alt.value(None))
-    dots = base.mark_point(size=60, filled=True, opacity=0).encode(
-        y="값:Q", color=alt.Color("색:N", scale=None), tooltip=alt.value(None)).add_params(hover)
-    rule = base.mark_rule(color="#9CA3AF").transform_filter(hover)
-    on = base.mark_point(size=70, filled=True).encode(
-        y="값:Q", color=alt.Color("색:N", scale=None)).transform_filter(hover)
-    label = base.mark_text(align="left", dx=8, dy=-10, fontSize=13, fontWeight="bold").encode(
-        y="값:Q", text=alt.Text("값:Q", format=",.1~f"),
-        color=alt.Color("색:N", scale=None)).transform_filter(hover)
-    clock = base.mark_text(align="left", dx=8, dy=8, fontSize=11, color="#6B7280").encode(
-        y="값:Q", text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover)
-
-    chart = alt.layer(band, limit, line, dots, rule, on, label, clock, data=long).properties(
-        width=640, height=150).facet(
-        row=alt.Row("항목:N", sort=order, title=None,
-                    header=alt.Header(labelAngle=0, labelAlign="left", labelAnchor="start",
-                                      labelOrient="top", labelFontSize=14, labelFontWeight="bold")),
-        spacing=6).resolve_scale(y="independent")
+                                empty=False, clear="pointerout", name="hover")
+    rows = []
+    for i, (name, col, color, lo, hi, span) in enumerate(SERIES):
+        last = i == len(SERIES) - 1
+        dom = fit(df[col], span)
+        x = alt.X("시각:T", title=None, axis=alt.Axis(
+            format="%H:%M", grid=False, labels=last, ticks=last, domain=last))
+        sc = alt.Scale(domain=dom, nice=False, zero=False)
+        y = alt.Y(f"{col}:Q", title=None, scale=sc, axis=alt.Axis(tickCount=4, gridOpacity=0.4))
+        base = alt.Chart(df).encode(x=x)
+        layers = []
+        if lo is not None:   # 학교 기준 띠 (그래프 범위 안에 들어온 만큼만)
+            layers.append(base.mark_area(opacity=0.13, color="#2A9D8F", clip=True).encode(
+                y=alt.YDatum(max(lo, dom[0]), scale=sc, title=None), y2=alt.Y2Datum(min(hi, dom[1]))))
+        if col == "co2" and dom[1] >= OPEN_AT:
+            layers.append(base.mark_rule(strokeDash=[6, 4], color="#D64545").encode(y=alt.YDatum(OPEN_AT, scale=sc, title=None)))
+        layers += [
+            base.mark_area(interpolate="monotone", clip=True, color=alt.Gradient(
+                gradient="linear", x1=1, x2=1, y1=1, y2=0,
+                stops=[alt.GradientStop(color=color, offset=0), alt.GradientStop(color=color, offset=1)]),
+                opacity=0.18).encode(y=y, y2=alt.Y2Datum(dom[0])),
+            base.mark_line(interpolate="monotone", strokeWidth=2.5, color=color, clip=True).encode(y=y),
+            base.mark_point(size=80, opacity=0).encode(y=y, tooltip=alt.value(None)).add_params(hover),
+            base.mark_rule(color="#9CA3AF").transform_filter(hover),
+            base.mark_point(size=90, filled=True, color=color).encode(y=y).transform_filter(hover),
+            base.mark_text(align="left", dx=9, dy=-12, fontSize=15, fontWeight="bold", color=color).encode(
+                y=y, text=alt.Text(f"{col}:Q", format=",.1~f")).transform_filter(hover),
+        ]
+        if i == 0:
+            layers.append(base.mark_text(align="left", dx=9, dy=8, fontSize=12, color="#6B7280").encode(
+                y=y, text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover))
+        rows.append(alt.layer(*layers).properties(
+            width=640, height=140 if not last else 150,
+            title=alt.TitleParams(name, anchor="start", fontSize=14, color=color, offset=4)))
+    chart = alt.vconcat(*rows, spacing=10).resolve_scale(x="shared").configure_view(stroke=None)
     st.altair_chart(chart, width="stretch")
 
 
@@ -290,7 +300,7 @@ def day_chart(day):
 
     combo_chart(df)
     st.caption("마우스(손가락)를 그래프에 올리면 그 시각의 세 값이 한 번에 보여요.  \n"
-               "초록 띠 = 학교 기준 (온도 18\\~20℃, 습도 30\\~80%) · 점선 = 이산화탄소 1,000ppm")
+               "그래프 높이는 그날 값에 맞춰 자동으로 늘었다 줄었다 해요. 초록 띠 = 학교 기준 · 빨간 점선 = 1,000ppm")
 
     with st.expander("표로 보기"):
         st.dataframe(df[["시각", "co2", "temp", "hum"]].rename(
