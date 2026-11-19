@@ -2,6 +2,7 @@
 라즈베리파이 → Supabase → 이 화면 (1분마다 저절로 새로 불러옴)
 바깥 공기: 에어코리아(미세먼지) + 기상청 초단기실황(기온·습도) - 공공데이터포털
 """
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -132,6 +133,14 @@ def temp_note(t):
     return "난방 기준 안이에요"
 
 
+def abs_hum(t, rh):
+    """절대습도(g/㎥) = 공기 1㎥ 안에 실제로 든 물의 양. 온도·상대습도로 계산 (Magnus 공식)"""
+    if t is None or rh is None:
+        return None
+    es = 6.112 * math.exp(17.67 * t / (t + 243.5))      # 그 온도의 포화 수증기압(hPa)
+    return es * rh * 2.1674 / (273.15 + t)
+
+
 def hum_note(h):
     if h < 30:
         return "건조해요 (기준 30~80%)"
@@ -168,11 +177,12 @@ def now_panel():
     c1.markdown(f'<div class="card"><div class="label">이산화탄소</div>'
                 f'<div class="big">{r["co2"]:,}<span class="unit"> ppm</span></div></div>',
                 unsafe_allow_html=True)
-    c2.markdown(f'<div class="card"><div class="label">온도</div>'
+    c2.markdown(f'<div class="card"><div class="label">실내 온도</div>'
                 f'<div class="mid">{r["temp"]:.1f}℃</div><div class="note">{temp_note(r["temp"])}</div></div>',
                 unsafe_allow_html=True)
-    c3.markdown(f'<div class="card"><div class="label">습도</div>'
-                f'<div class="mid">{r["hum"]:.0f}%</div><div class="note">{hum_note(r["hum"])}</div></div>',
+    c3.markdown(f'<div class="card"><div class="label">실내 습도</div>'
+                f'<div class="mid">{r["hum"]:.0f}%</div>'
+                f'<div class="note">물 {abs_hum(r["temp"], r["hum"]):.1f} g/㎥ · {hum_note(r["hum"])}</div></div>',
                 unsafe_allow_html=True)
 
     when = f"{t:%m월 %d일 %H:%M} 측정"
@@ -181,9 +191,9 @@ def now_panel():
     else:
         st.caption(f"🕒 {when} · {max(ago, 0)}분 전")
 
-    st.markdown("**🌤️ 바깥 (공공데이터)**")
+    st.markdown("**🌤️ 외부 (공공데이터)**")
     if air is None and wx is None:
-        st.info("공공데이터 열쇠를 넣으면 바깥 미세먼지·기온·습도가 여기 나와요.")
+        st.info("공공데이터 열쇠를 넣으면 외부 미세먼지·온도·습도가 여기 나와요.")
         return
     d1, d2, d3 = st.columns(3)
     g, gc = pm25_grade(air["pm25"] if air else None)
@@ -196,10 +206,13 @@ def now_panel():
     oh = f'{wx["hum"]:.0f}%' if wx and wx["hum"] is not None else "-"
     diff = (f'실내와 {r["temp"] - wx["temp"]:+.1f}℃ 차이'.replace("+", "")
             if wx and wx["temp"] is not None else "")
-    d2.markdown(f'<div class="card"><div class="label">바깥 기온</div>'
+    d2.markdown(f'<div class="card"><div class="label">외부 온도</div>'
                 f'<div class="small">{ot}</div><div class="note">{diff}</div></div>', unsafe_allow_html=True)
-    d3.markdown(f'<div class="card"><div class="label">바깥 습도</div>'
-                f'<div class="small">{oh}</div><div class="note">&nbsp;</div></div>', unsafe_allow_html=True)
+    oa = abs_hum(wx["temp"], wx["hum"]) if wx else None
+    ia = abs_hum(r["temp"], r["hum"])
+    an = (f'물 {oa:.1f} g/㎥ · 실내의 {oa / ia * 100:.0f}%' if oa is not None and ia else "&nbsp;")
+    d3.markdown(f'<div class="card"><div class="label">외부 습도</div>'
+                f'<div class="small">{oh}</div><div class="note">{an}</div></div>', unsafe_allow_html=True)
     src = []
     if air:
         src.append(f"에어코리아 {STATION} {air['time']}")
@@ -217,11 +230,11 @@ today = datetime.now(KST).date()
 day = st.date_input("날짜", value=today, max_value=today, format="YYYY-MM-DD")
 
 
-SERIES = [  # 이름, 실내 열, 바깥 열, 색, 기준 아래, 기준 위, 최소 눈금 폭
+SERIES = [  # 이름, 실내 열, 외부 열, 색, 기준 아래, 기준 위, 최소 눈금 폭
     ("이산화탄소 (ppm)", "co2", None, "#E4572E", None, None, 60),
-    ("온도 (℃)", "temp", "temp", "#E08A00", 18, 20, 2),
-    ("습도 (%)", "hum", "hum", "#2F6FB0", 30, 80, 6),
-    ("바깥 초미세먼지 (㎍/㎥)", None, "pm25", "#7B61C9", 0, 15, 10),
+    ("온도 (℃) · 실내 / 외부", "temp", "temp", "#E08A00", 18, 20, 2),
+    ("절대습도 (g/㎥) · 공기 1㎥ 속 물의 양", "ah", "ah", "#2F6FB0", None, None, 1),
+    ("외부 초미세먼지 (㎍/㎥)", None, "pm25", "#7B61C9", 0, 15, 10),
 ]
 
 
@@ -288,7 +301,23 @@ def combo_chart(df, out):
             layers.append(base.mark_text(align="left", dx=9, dy=12, fontSize=12, color=color, opacity=0.85)
                           .encode(y=hy, text="t:N").transform_filter(hover)
                           .transform_filter(f"isValid(datum.o_{oc})")
-                          .transform_calculate(t=f"'바깥 ' + format(datum.o_{oc}, '.1f')"))
+                          .transform_calculate(t=f"'외부 ' + format(datum.o_{oc}, '.1f')"))
+        if col == "temp" and has_out:   # 온도: 실내 ↔ 외부 사이를 잇는 막대 + 온도 차이
+            ok = "isValid(datum.o_temp)"
+            layers += [
+                base.mark_rule(color=color, strokeWidth=3, opacity=0.55).encode(
+                    y=alt.Y("temp:Q", title=None, scale=sc, axis=yax), y2="o_temp:Q")
+                .transform_filter(hover).transform_filter(ok),
+                base.mark_point(size=70, filled=True, color="white", stroke=color, strokeWidth=2).encode(
+                    y=alt.Y("o_temp:Q", title=None, scale=sc, axis=yax))
+                .transform_filter(hover).transform_filter(ok),
+                base.mark_text(align="right", dx=-10, fontSize=13, fontWeight="bold", color=color).encode(
+                    y=alt.Y("mid:Q", title=None, scale=sc, axis=yax), text="gap:N")
+                .transform_filter(hover).transform_filter(ok)
+                .transform_calculate(mid="(datum.temp + datum.o_temp) / 2",
+                                     gap="'차이 ' + format(abs(datum.temp - datum.o_temp), '.1f') + '℃ '"
+                                         " + (datum.temp >= datum.o_temp ? '(실내가 따뜻)' : '(외부가 따뜻)')"),
+            ]
         if i == 0:
             layers.append(base.mark_text(align="left", dx=9, dy=-30, fontSize=12, color="#6B7280").encode(
                 y=hy, text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover))
@@ -384,26 +413,35 @@ def day_chart(day):
         st.info("이 날은 기록이 없어요.")
         return
     df["시각"] = pd.to_datetime(df["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+    df["ah"] = [abs_hum(t, h) for t, h in zip(df.temp, df.hum)]
     out = outdoor_rows(start, end)
-    if not out.empty:   # 실내 각 시각에 그때의 바깥 값(1시간 단위)을 붙임
-        o = out[["시각", "temp", "hum", "pm25"]].rename(
-            columns={"temp": "o_temp", "hum": "o_hum", "pm25": "o_pm25"})
+    if not out.empty:   # 실내 각 시각에 그때의 외부 값(1시간 단위)을 붙임
+        out = out.copy()
+        out["ah"] = [abs_hum(t, h) if pd.notna(t) and pd.notna(h) else None
+                     for t, h in zip(out.temp, out.hum)]
+        out["ah"] = pd.to_numeric(out["ah"])
+        o = out[["시각", "temp", "hum", "ah", "pm25"]].rename(
+            columns={"temp": "o_temp", "hum": "o_hum", "ah": "o_ah", "pm25": "o_pm25"})
         df = pd.merge_asof(df.sort_values("시각"), o.sort_values("시각"), on="시각",
                            direction="backward", tolerance=pd.Timedelta("90min"))
 
     a, b, c = st.columns(3)
     a.metric("이산화탄소 최고", f"{df.co2.max():,} ppm", help=f"{df.loc[df.co2.idxmax(), '시각']:%H:%M}")
     b.metric("온도 범위", f"{df.temp.min():.1f}~{df.temp.max():.1f}℃")
-    c.metric("습도 범위", f"{df.hum.min():.0f}~{df.hum.max():.0f}%")
+    c.metric("습도 범위", f"{df.hum.min():.0f}~{df.hum.max():.0f}%",
+             help=f"절대습도 {df.ah.min():.1f}~{df.ah.max():.1f} g/㎥")
 
     combo_chart(df, out)
-    st.caption("**실선 = 실내 · 점선 = 바깥** (기상청·에어코리아, 1시간마다)  \n"
+    st.caption("**실선 = 실내 · 점선 = 외부** (기상청·에어코리아, 1시간마다)  \n"
                "마우스(손가락)를 그래프에 올리면 그 시각의 값이 한 번에 보여요.  \n"
-               "초록 띠 = 학교 기준 (초미세먼지는 '좋음' 15 이하) · 빨간 점선 = 이산화탄소 1,000ppm")
+               "초록 띠 = 학교 기준 (초미세먼지는 '좋음' 15 이하) · 빨간 점선 = 이산화탄소 1,000ppm  \n"
+               "절대습도 = 공기 1㎥에 든 물의 양. 온도가 달라도 실내·외부를 바로 비교할 수 있어요 "
+               "(겨울엔 외부 %가 높아 보여도 물은 더 적어요)")
 
     with st.expander("표로 보기"):
-        st.dataframe(df[["시각", "co2", "temp", "hum"]].rename(
-            columns={"co2": "이산화탄소(ppm)", "temp": "온도(℃)", "hum": "습도(%)"}),
+        st.dataframe(df[["시각", "co2", "temp", "hum", "ah"]].round({"ah": 1}).rename(
+            columns={"co2": "이산화탄소(ppm)", "temp": "실내 온도(℃)", "hum": "실내 습도(%)",
+                     "ah": "절대습도(g/㎥)"}),
             hide_index=True, width="stretch")
 
 
@@ -411,5 +449,5 @@ day_chart(day)
 
 st.divider()
 st.caption("기준: 학교보건법 시행규칙 — 이산화탄소 1,000ppm 이하, 난방 온도 18\\~20℃, 습도 30\\~80%  \n"
-           "바깥 공기: 공공데이터포털 — 한국환경공단 에어코리아, 기상청 초단기실황  \n"
+           "외부 공기: 공공데이터포털 — 한국환경공단 에어코리아, 기상청 초단기실황  \n"
            "만든 사람: 충북도립대학교 AI산업학과 컴퓨터드론전공 임건호")
