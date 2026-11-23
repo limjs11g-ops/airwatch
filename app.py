@@ -21,7 +21,7 @@ NX, NY = 71, 100        # 기상청 격자 (충북 옥천)
 
 OPEN_AT = 1000   # 이 이상이면 열기 (학교보건법 기준)
 WARN_AT = 800    # 이 이상이면 곧 환기
-CLOSE_AT = 800   # 이 아래로 내려오면 닫기
+CLOSE_AT = 500   # 연 뒤 이 아래로 내려오면 닫기 (바깥 공기 약 420ppm)
 
 st.set_page_config(page_title=f"{ROOM} 공기 현황", page_icon="🪟", layout="centered")
 st.markdown("""
@@ -128,9 +128,12 @@ def judge(co2, air, wx, was_open=False):
     if was_open and co2 < CLOSE_AT:
         return ("#2F6FB0", "🔵 이제 닫기",
                 f"환기 뒤 {CLOSE_AT:,}ppm 아래로 내려왔어요. 닫아서 냉난방 열을 아껴요.")
+    if was_open:
+        return ("#5B8DB8", "🪟 환기 중 · 조금 더 열어 두세요",
+                f"공기가 바뀌고 있어요. {CLOSE_AT:,}ppm 아래로 내려가면 닫으라고 알려 드릴게요.")
     if co2 >= WARN_AT:
         return "#E08A00", "🟡 곧 환기가 필요해요", f"{OPEN_AT:,}ppm에 가까워지고 있어요. 쉬는 시간에 열어 주세요."
-    return "#2A9D8F", "🟢 공기 좋음 · 닫아 두세요", f"{CLOSE_AT:,}ppm 아래예요. 닫아 두면 냉난방 열을 아낄 수 있어요."
+    return "#2A9D8F", "🟢 공기 좋음 · 닫아 두세요", f"{WARN_AT:,}ppm 아래예요. 닫아 두면 냉난방 열을 아낄 수 있어요."
 
 
 def was_high(minutes=60):
@@ -147,7 +150,7 @@ def was_high(minutes=60):
 TESTS = {
     "1": {"co2": 1150, "pm25": 12, "pm10": 25, "was_open": False, "name": "① 창문 5분 열기 (실내 1,150ppm · 바깥 초미세먼지 좋음 12)"},
     "2": {"co2": 1150, "pm25": 48, "pm10": 80, "was_open": False, "name": "② 복도 문만 짧게 (실내 1,150ppm · 바깥 초미세먼지 나쁨 48)"},
-    "3": {"co2": 720, "pm25": 12, "pm10": 25, "was_open": True, "name": "③ 이제 닫기 (1,150ppm에서 환기 → 720ppm으로 내려옴)"},
+    "3": {"co2": 480, "pm25": 12, "pm10": 25, "was_open": True, "name": "③ 이제 닫기 (1,150ppm에서 환기 → 480ppm으로 내려옴)"},
 }
 
 
@@ -203,7 +206,7 @@ def now_panel():
         wx = dict(wx, rain=0) if wx else wx      # 시험 때는 비 조건을 빼고 미세먼지만 봄
         was_open = case["was_open"]
     else:
-        was_open = r["co2"] < CLOSE_AT and was_high()
+        was_open = r["co2"] < OPEN_AT and was_high()
 
     color, head, sub = judge(r["co2"], air, wx, was_open)
     st.markdown(f'<div class="lamp" style="background:{color}"><h2>{head}</h2><p>{sub}</p></div>',
