@@ -111,18 +111,44 @@ def pm25_grade(v):
     return "매우 나쁨", "#D64545"
 
 
-def judge(co2, air, wx):
-    bad_air = air and air["pm25"] is not None and air["pm25"] > 35
+def judge(co2, air, wx, was_open=False):
+    """논문 2.3.3 판단 규칙과 같은 순서 · 같은 문구"""
+    bad_air = air and air["pm25"] is not None and air["pm25"] > 35   # 초미세먼지 36 이상 = 나쁨
+    rain = wx and (wx.get("rain") or 0) > 0                           # 기상청 강수형태 0 = 비 안 옴
     cold = wx and wx["temp"] is not None and wx["temp"] < 5
     if co2 >= OPEN_AT:
-        if bad_air:
-            return "#D64545", "🔴 5분만 짧게 여세요", "이산화탄소는 높은데 바깥 미세먼지가 나빠요. 짧게 열고 바로 닫아요."
-        if cold:
-            return "#D64545", "🔴 지금 여세요 (짧고 크게)", "바깥이 추워요. 창문을 크게 열고 3~5분 만에 닫으면 열 손실이 적어요."
-        return "#D64545", "🔴 지금 창문을 여세요", f"이산화탄소가 학교 기준 {OPEN_AT:,}ppm을 넘었어요."
+        if bad_air or rain:
+            why = f"바깥 초미세먼지가 나빠요({air['pm25']}㎍/㎥)" if bad_air else "바깥에 비나 눈이 와요"
+            return ("#D97706", "🟠 복도 문만 짧게",
+                    f"이산화탄소가 {OPEN_AT:,}ppm을 넘었는데 {why}. "
+                    "창문 대신 복도 쪽 문을 잠깐 열어 주세요.")
+        tip = " 바깥이 추우니 크게 열고 5분 안에 닫아요." if cold else ""
+        return ("#D64545", "🔴 창문 5분 열기",
+                f"이산화탄소가 학교 기준 {OPEN_AT:,}ppm을 넘었어요. 바깥 공기는 괜찮아요.{tip}")
+    if was_open and co2 < CLOSE_AT:
+        return ("#2F6FB0", "🔵 이제 닫기",
+                f"환기 뒤 {CLOSE_AT:,}ppm 아래로 내려왔어요. 닫아서 냉난방 열을 아껴요.")
     if co2 >= WARN_AT:
         return "#E08A00", "🟡 곧 환기가 필요해요", f"{OPEN_AT:,}ppm에 가까워지고 있어요. 쉬는 시간에 열어 주세요."
     return "#2A9D8F", "🟢 공기 좋음 · 닫아 두세요", f"{CLOSE_AT:,}ppm 아래예요. 닫아 두면 냉난방 열을 아낄 수 있어요."
+
+
+def was_high(minutes=60):
+    """최근 {minutes}분 안에 1,000ppm 이상이었던 기록이 있으면 True (= 환기 중이었음)"""
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        rows = get(f"indoor?select=co2&room_id=eq.1&measured_at=gte.{since}&co2=gte.{OPEN_AT}&limit=1")
+        return bool(rows)
+    except Exception:
+        return False
+
+
+# 시연 모드: 주소 뒤에 ?test=1 / 2 / 3 을 붙이면 논문 시험 상황을 그대로 보여 줌
+TESTS = {
+    "1": {"co2": 1150, "pm25": 12, "pm10": 25, "was_open": False, "name": "① 창문 5분 열기 (실내 1,150ppm · 바깥 초미세먼지 좋음 12)"},
+    "2": {"co2": 1150, "pm25": 48, "pm10": 80, "was_open": False, "name": "② 복도 문만 짧게 (실내 1,150ppm · 바깥 초미세먼지 나쁨 48)"},
+    "3": {"co2": 720, "pm25": 12, "pm10": 25, "was_open": True, "name": "③ 이제 닫기 (1,150ppm에서 환기 → 720ppm으로 내려옴)"},
+}
 
 
 def temp_note(t):
@@ -168,7 +194,18 @@ def now_panel():
     ago = int((datetime.now(KST) - t).total_seconds() // 60)
     air, wx = outdoor()
 
-    color, head, sub = judge(r["co2"], air, wx)
+    case = TESTS.get(st.query_params.get("test", ""))
+    if case:
+        st.info(f"🧪 **시연 모드** — {case['name']}  \n실제 측정값이 아니라 시험용 값이에요. "
+                "주소 뒤의 `?test=` 를 지우면 실제 값으로 돌아가요.")
+        r = dict(r, co2=case["co2"])
+        air = {"pm25": case["pm25"], "pm10": case["pm10"], "time": "시험값"}
+        wx = dict(wx, rain=0) if wx else wx      # 시험 때는 비 조건을 빼고 미세먼지만 봄
+        was_open = case["was_open"]
+    else:
+        was_open = r["co2"] < CLOSE_AT and was_high()
+
+    color, head, sub = judge(r["co2"], air, wx, was_open)
     st.markdown(f'<div class="lamp" style="background:{color}"><h2>{head}</h2><p>{sub}</p></div>',
                 unsafe_allow_html=True)
 
