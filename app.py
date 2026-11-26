@@ -48,7 +48,7 @@ st.markdown("""
              border: 3px solid; transform: translate(-50%, -50%);}
 .ticks {position: relative; height: 14px; margin-top: 7px; font-size: 10px; color: #6B7280;}
 .ticks span {position: absolute; transform: translateX(-50%); white-space: nowrap;}
-.rng {position: relative; height: 13px; border-radius: 7px; background: rgba(128,128,128,.22); margin-top: 30px;}
+.rng {position: relative; height: 13px; border-radius: 7px; background: rgba(128,128,128,.22); margin-top: 6px;}
 .rng .band {position: absolute; top: -3px; bottom: -3px; border-radius: 3px; background: rgba(42,157,143,.3);}
 .rng .mark {position: absolute; top: -5px; bottom: -5px; width: 2px;}
 .rng .tk {position: absolute; bottom: -6px; width: 1px; height: 5px; background: rgba(128,128,128,.7);}
@@ -57,7 +57,10 @@ st.markdown("""
   background-image: repeating-linear-gradient(90deg, transparent 0 5px, rgba(0,0,0,.35) 5px 8px);}
 .rng .end {position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: #fff;
            border: 3px solid; transform: translate(-50%, -50%);}
-.rng .tag {position: absolute; top: -22px; font-size: 11px; font-weight: 700; white-space: nowrap;}
+.lrow {display: flex; font-size: 11px; white-space: nowrap; margin-top: 4px; min-height: 16px;}
+.lrow.o {color: #6B7280;} .lrow b {font-size: 12px;}
+.lrow .l {text-align: right; min-width: max-content;} .lrow .r {min-width: max-content;}
+.lrow .gap {min-width: 8px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -219,28 +222,34 @@ def gauge(v, lo, hi, step, color, band=None, marks=(), zones=(), label_step=None
 
 def range_bar(lo, hi, step, color, inner, outer=None, band=None, marks=(), label_step=None,
               fmt=lambda x: f"{x:g}", tag=lambda x: f"{x:g}"):
-    """하루 동안 오르내린 폭 막대: 실내(굵게, 양 끝 동그라미) + 외부(얇은 줄무늬)"""
+    """하루 동안 오르내린 폭 막대: 실내(굵게, 양 끝 동그라미) + 외부(얇은 줄무늬), 위에 최저·최고 숫자"""
     pct = lambda x: (min(max(x, lo), hi) - lo) / (hi - lo) * 100
-    h = '<div class="rng">'
+
+    def row(a, b, lo_t, hi_t, cls, style=""):
+        # 최저는 막대 왼쪽 끝 쪽, 최고는 오른쪽 끝 쪽 · 글자가 칸 밖으로 안 나가게 flex로 자리 잡음
+        return (f'<div class="lrow {cls}" style="{style}"><span class="l" style="flex:0 1 {a}%">{lo_t}</span>'
+                f'<span class="gap" style="flex:1 1 {max(b - a, 0)}%"></span><span class="r">{hi_t}</span>'
+                f'<span style="flex:0 1 {100 - b}%"></span></div>')
+
+    has_out = bool(outer) and None not in outer
+    h = (row(pct(outer[0]), pct(outer[1]), f"외부 최저 <b>{tag(outer[0])}</b>", f"외부 최고 <b>{tag(outer[1])}</b>", "o")
+         if has_out else '<div class="lrow o">&nbsp;</div>')          # 외부 없으면 빈 줄로 높이 맞춤
+    h += row(pct(inner[0]), pct(inner[1]), f"최저 <b>{tag(inner[0])}</b>", f"최고 <b>{tag(inner[1])}</b>",
+             "i", f"color:{color}")
+    h += '<div class="rng">'
     if band:
         h += f'<div class="band" style="left:{pct(band[0])}%;width:{pct(band[1]) - pct(band[0])}%"></div>'
     for x, c in marks:
         h += f'<div class="mark" style="left:{pct(x)}%;background:{c}"></div>'
     n = round((hi - lo) / step)
     h += "".join(f'<i class="tk" style="left:{i / n * 100}%"></i>' for i in range(n + 1))
-    if outer and None not in outer:
+    if has_out:
         a, b = pct(outer[0]), pct(outer[1])
         h += f'<div class="span out" style="left:{a}%;width:{max(b - a, 1)}%;background-color:{color}"></div>'
     a, b = pct(inner[0]), pct(inner[1])
     h += (f'<div class="span" style="left:{a}%;width:{max(b - a, 0.5)}%;background:{color}"></div>'
           f'<div class="end" style="left:{a}%;border-color:{color}"></div>'
           f'<div class="end" style="left:{b}%;border-color:{color}"></div>')
-    if b - a < 16:   # 좁으면 가운데에 한 번만
-        h += (f'<div class="tag" style="left:{(a + b) / 2}%;transform:translateX(-50%);color:{color}">'
-              f'{tag(inner[0])} ~ {tag(inner[1])}</div>')
-    else:
-        h += (f'<div class="tag" style="left:{a}%;transform:translateX(-90%);color:{color}">{tag(inner[0])}</div>'
-              f'<div class="tag" style="left:{b}%;transform:translateX(-10%);color:{color}">{tag(inner[1])}</div>')
     h += '</div><div class="ticks">'
     m = round((hi - lo) / (label_step or step))
     h += "".join(f'<span style="left:{i / m * 100}%">{fmt(lo + i * (label_step or step))}</span>'
@@ -620,7 +629,7 @@ def day_chart(day):
         f'<div class="note">{sub}</div>{bar}</div>')
     a, b, c = st.columns(3)
     a.markdown(card("이산화탄소 최고", f"{df.co2.max():,}", " ppm",
-                    f"{df.co2.min():,} ~ {df.co2.max():,} · 최고 {peak_at:%H:%M}<br>"
+                    f"최저 {df.co2.min():,} · 최고 {df.co2.max():,} ({peak_at:%H:%M})<br>"
                     f"{OPEN_AT:,} 넘은 시간 {over_min}분",
                     range_bar(400, 1600, 200, "#E4572E", (df.co2.min(), df.co2.max()),
                               marks=[(OPEN_AT, "#D64545"), (CLOSE_AT, "#2F6FB0")],
@@ -630,7 +639,7 @@ def day_chart(day):
                     f"하루 폭 {it[1] - it[0]:.1f}℃<br>"
                     + (f"외부 {o_t[0]:.1f}~{o_t[1]:.1f}℃ (폭 {o_t[1] - o_t[0]:.1f}℃)" if o_t else "외부 기록 없음"),
                     range_bar(color="#E08A00", inner=it, outer=o_t, band=(18, 20),
-                              tag=lambda x: f"{x:.1f}", **T_RANGE)),
+                              tag=lambda x: f"{x:.1f}℃", **T_RANGE)),
                unsafe_allow_html=True)
     c.markdown(card("습도 범위 (20℃ 기준)", f"{ih[0]:.0f}~{ih[1]:.0f}", "%",
                     f"{df.ah.min():.1f}~{df.ah.max():.1f}&nbsp;g/㎥ · 상대 {df.hum.min():.0f}~{df.hum.max():.0f}%<br>"
@@ -638,7 +647,7 @@ def day_chart(day):
                     range_bar(0, 100, 20, "#2F6FB0", ih, outer=o_h, band=(30, 80), fmt=PCT,
                               tag=lambda x: f"{x:.0f}%")),
                unsafe_allow_html=True)
-    st.caption("막대 = 하루 동안 오르내린 폭 (굵은 막대 = 실내, 양 끝 = 최저·최고 · 얇은 줄무늬 = 외부)")
+    st.caption("막대 = 하루 동안 오르내린 폭 · 굵은 막대와 진한 글자 = 실내 최저·최고 · 얇은 줄무늬와 회색 글자 = 외부")
 
     combo_chart(df, out)
     st.caption("**실선 = 실내 · 점선 = 외부** (기상청·에어코리아, 1시간마다 · 지난 날짜 온도·습도는 기상청 대전 관측소)  \n"
