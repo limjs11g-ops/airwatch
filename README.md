@@ -33,11 +33,13 @@ SCD41 센서 ──(5초마다)──→ 라즈베리파이 5
 |---|---|
 | `app.py` | Streamlit 웹 화면 (실내·외부 비교, 절대습도, 그래프) |
 | `pi/scd41_logger.py` | 라즈베리파이 기록기 — 센서 읽기, DB·CSV·Supabase 저장, 아두이노로 숫자 보내기 |
+| `pi/outdoor.py` | 바깥 공기 기록기 — 매시 50분 기상청·에어코리아 값을 Supabase `outdoor` 표에 저장 (최근 24시간을 다시 채워 빈칸 메움) |
 | `arduino/co2_display.ino` | 모형집 아두이노 — 전광판·신호등·환기팬·부저 (최신) |
 | `arduino/model_house.ino` | 모형집 우드락 1호 때 만든 첫 버전 (서보 창문 포함) |
 | `arduino/lcd_test.ino` | 전광판 글자 시험용 |
 | `arduino/i2c_scanner.ino` | 전광판 주소(0x27) 찾기용 |
 | `db/schema.sql` | 표 구조 (indoor / latest / outdoor) |
+| `db/outdoor_setup.sql` | `outdoor` 표 준비 + 웹 읽기 허락 (Supabase SQL Editor에서 한 번) |
 | `개발일지.md` | 날짜별 진행 기록과 막혔던 문제·해결 |
 
 <br>
@@ -71,5 +73,6 @@ SCD41 센서 ──(5초마다)──→ 라즈베리파이 5
 
 - `~/supabase_key.txt` — Supabase 쓰기 열쇠
 - `~/db_password.txt` — MariaDB 비밀번호
+- `~/data_go_kr_key.txt` — 공공데이터포털 인증키 (바깥 공기 기록기용)
 
 웹의 공공데이터 열쇠는 Streamlit 비밀 설정(`DATA_GO_KR_KEY`)에 넣습니다.

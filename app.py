@@ -61,12 +61,14 @@ def air_korea(key):
     """에어코리아 측정소별 실시간 측정정보"""
     r = requests.get(
         "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
-        params={"serviceKey": key, "returnType": "json", "numOfRows": 1, "pageNo": 1,
+        params={"serviceKey": key, "returnType": "json", "numOfRows": 24, "pageNo": 1,
                 "stationName": STATION, "dataTerm": "DAILY", "ver": "1.0"}, timeout=10)
-    item = r.json()["response"]["body"]["items"][0]
+    items = r.json()["response"]["body"]["items"]
     num = lambda v: int(v) if str(v).isdigit() else None
+    # 측정소가 점검·통신장애로 "-" 를 보내면, 숫자가 있는 가장 최근 시각 값을 대신 씀
+    item = next((i for i in items if num(i.get("pm25Value")) is not None), items[0])
     return {"time": item.get("dataTime"), "pm10": num(item.get("pm10Value")),
-            "pm25": num(item.get("pm25Value"))}
+            "pm25": num(item.get("pm25Value")), "old": item is not items[0]}
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -240,7 +242,8 @@ def now_panel():
     pm = f'{air["pm25"]}' if air and air["pm25"] is not None else "-"
     d1.markdown(f'<div class="card"><div class="label">초미세먼지</div>'
                 f'<div class="small" style="color:{gc}">{pm}<span class="unit"> ㎍/㎥</span></div>'
-                f'<div class="note">{g} · 미세먼지 {air["pm10"] if air and air["pm10"] is not None else "-"}</div></div>',
+                f'<div class="note">{g} · 미세먼지 {air["pm10"] if air and air["pm10"] is not None else "-"}'
+                f'{" · " + air["time"][-5:] + " 값" if air and air.get("old") else ""}</div></div>',
                 unsafe_allow_html=True)
     ot = f'{wx["temp"]:.1f}℃' if wx and wx["temp"] is not None else "-"
     oh = f'{wx["hum"]:.0f}%' if wx and wx["hum"] is not None else "-"
@@ -420,20 +423,28 @@ def outdoor_rows(start, end):
                    "&order=measured_at.asc")
     except Exception:
         rows = []
-    o = pd.DataFrame(rows, columns=["measured_at"] + cols[1:])
-    if not o.empty:
-        o["시각"] = pd.to_datetime(o["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
-        return o[cols]
+    saved = pd.DataFrame(rows, columns=["measured_at"] + cols[1:])
+    if not saved.empty:
+        saved["시각"] = pd.to_datetime(saved["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+    saved = saved[cols]
+    # 최근 24시간은 공공데이터에서도 직접 받아, 저장된 기록의 빈칸을 메움 (파이가 끊겼던 시간 등)
     key = secret("DATA_GO_KR_KEY")
     if not key or end < datetime.now(KST) - timedelta(hours=25):
-        return pd.DataFrame(columns=cols)
+        return saved.reset_index(drop=True)
     anchor = (datetime.now(KST) - timedelta(minutes=45)).replace(minute=0, second=0, microsecond=0)
-    o = outdoor_24h(key, anchor.isoformat())
-    if o.empty:
-        return pd.DataFrame(columns=cols)
-    o["시각"] = pd.to_datetime(o["시각"])
+    live = outdoor_24h(key, anchor.isoformat())
+    if live.empty:
+        return saved.reset_index(drop=True)
+    live = live.copy()
+    live["시각"] = pd.to_datetime(live["시각"])
     lo, hi = start.replace(tzinfo=None), end.replace(tzinfo=None)
-    return o[(o["시각"] >= lo) & (o["시각"] < hi)][cols].reset_index(drop=True)
+    live = live[(live["시각"] >= lo) & (live["시각"] < hi)][cols]
+    if saved.empty:
+        return live.reset_index(drop=True)
+    both = saved.set_index("시각").combine_first(live.set_index("시각")).reset_index()[cols]
+    for c in cols[1:]:
+        both[c] = pd.to_numeric(both[c], errors="coerce")
+    return both.sort_values("시각").reset_index(drop=True)
 
 
 @st.fragment(run_every="60s")
