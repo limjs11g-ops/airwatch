@@ -579,7 +579,7 @@ def pattern_panel():
                                       scale=alt.Scale(scheme="oranges", domain=[400, 1200], clamp=True),
                                       legend=alt.Legend(orient="bottom", gradientLength=260,
                                                         values=[400, 600, 800, 1000, 1200])),
-                            alt.value("rgba(156,163,175,0.18)")),
+                            alt.value("rgba(156,163,175,0.5)")),
         tooltip=[alt.Tooltip("요일:N"), alt.Tooltip("시:O", title="시"),
                  alt.Tooltip("평균:Q", title="평균 ppm", format=",.0f"),
                  alt.Tooltip("최고:Q", title="최고 ppm", format=",.0f"),
