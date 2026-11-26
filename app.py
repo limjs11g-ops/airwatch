@@ -424,8 +424,8 @@ def outdoor_rows(start, end):
     except Exception:
         rows = []
     saved = pd.DataFrame(rows, columns=["measured_at"] + cols[1:])
-    if not saved.empty:
-        saved["시각"] = pd.to_datetime(saved["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+    saved["시각"] = (pd.to_datetime(saved["measured_at"]).dt.tz_convert(KST).dt.tz_localize(None)
+                   if not saved.empty else pd.Series(dtype="datetime64[ns]"))
     saved = saved[cols]
     # 최근 24시간은 공공데이터에서도 직접 받아, 저장된 기록의 빈칸을 메움 (파이가 끊겼던 시간 등)
     key = secret("DATA_GO_KR_KEY")
