@@ -557,9 +557,11 @@ def pattern_panel():
     g["평균"] = g["평균"].round()
     g["넘음"] = g["평균"] >= OPEN_AT
     days = [d for d in DAYS if d in set(g["요일"])]
+    full = pd.MultiIndex.from_product([days, range(24)], names=["요일", "시"])   # 기록 없는 칸도 회색으로
+    g = g.set_index(["요일", "시"]).reindex(full).reset_index()
 
     worst = g.loc[g["평균"].idxmax()]
-    over = g[g["넘음"]]
+    over = g[g["넘음"] == True]  # noqa: E712 (빈 칸은 NaN)
     n_days = df["날"].nunique()
     a, b, c = st.columns(3)
     a.metric("가장 답답한 때", f"{worst['요일']} {int(worst['시'])}시",
@@ -572,9 +574,12 @@ def pattern_panel():
         y=alt.Y("요일:N", sort=days, title=None, axis=alt.Axis(grid=False)),
     )
     cells = base.mark_rect(cornerRadius=3, stroke=None).encode(
-        color=alt.Color("평균:Q", title="평균 ppm",
-                        scale=alt.Scale(scheme="oranges", domain=[400, 1200], clamp=True),
-                        legend=alt.Legend(orient="bottom", gradientLength=260, values=[400, 600, 800, 1000, 1200])),
+        color=alt.condition("isValid(datum.평균)",
+                            alt.Color("평균:Q", title="평균 ppm",
+                                      scale=alt.Scale(scheme="oranges", domain=[400, 1200], clamp=True),
+                                      legend=alt.Legend(orient="bottom", gradientLength=260,
+                                                        values=[400, 600, 800, 1000, 1200])),
+                            alt.value("rgba(156,163,175,0.18)")),
         tooltip=[alt.Tooltip("요일:N"), alt.Tooltip("시:O", title="시"),
                  alt.Tooltip("평균:Q", title="평균 ppm", format=",.0f"),
                  alt.Tooltip("최고:Q", title="최고 ppm", format=",.0f"),
@@ -582,15 +587,15 @@ def pattern_panel():
     )
     marks = base.mark_text(fontSize=11, fontWeight="bold", color="white").encode(
         text=alt.Text("평균:Q", format=",.0f")).transform_filter(f"datum.평균 >= {OPEN_AT}")
-    chart = (cells + marks).properties(width=640, height=34 * len(days) + 10).configure_view(stroke=None)
+    chart = (cells + marks).properties(width=640, height=34 * len(days) + 150).configure_view(stroke=None)
     st.altair_chart(chart, width="stretch")
 
     tip = (f"**{worst['요일']}요일 {int(worst['시'])}시** 앞 쉬는 시간에 미리 열어 두면 좋아요."
            if worst["평균"] >= WARN_AT else "아직 기준을 넘는 시간대가 없어요. 지금처럼 닫아 두세요.")
-    st.caption(f"색이 진할수록 이산화탄소가 많아요. 칸 안 숫자 = 평균이 {OPEN_AT:,}ppm을 넘은 시간.  \n"
+    st.caption(f"색이 진할수록 이산화탄소가 많아요. 칸 안 숫자 = 평균이 {OPEN_AT:,}ppm을 넘은 시간 · 흐린 회색 = 기록 없음.  \n"
                f"💡 {tip}")
     with st.expander("표로 보기 (요일·시간별)"):
-        st.dataframe(g.rename(columns={"평균": "평균(ppm)", "최고": "최고(ppm)", "기록": "기록 수"})
+        st.dataframe(g.dropna(subset=["평균"]).rename(columns={"평균": "평균(ppm)", "최고": "최고(ppm)", "기록": "기록 수"})
                      .drop(columns="넘음"), hide_index=True, width="stretch")
 
 
