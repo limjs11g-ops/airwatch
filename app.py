@@ -37,6 +37,17 @@ st.markdown("""
 .mid {font-size: 36px; font-weight: 800;}
 .small {font-size: 26px; font-weight: 800;}
 .note {font-size: 13px; color: #6B7280; margin-top: 4px;}
+.gram {font-size: 13px; font-weight: 700; color: #6B7280;}
+.gauge {position: relative; height: 9px; border-radius: 6px; background: rgba(128,128,128,.22); margin-top: 14px;}
+.gauge .fill {position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; opacity: .85;}
+.gauge .band {position: absolute; top: -3px; bottom: -3px; border-radius: 3px; background: rgba(42,157,143,.35);}
+.gauge .zone {position: absolute; top: 0; bottom: 0;}
+.gauge .mark {position: absolute; top: -5px; bottom: -5px; width: 2px;}
+.gauge .tk {position: absolute; bottom: -6px; width: 1px; height: 5px; background: rgba(128,128,128,.7);}
+.gauge .dot {position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: #fff;
+             border: 3px solid; transform: translate(-50%, -50%);}
+.ticks {position: relative; height: 14px; margin-top: 7px; font-size: 10px; color: #6B7280;}
+.ticks span {position: absolute; transform: translateX(-50%); white-space: nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,6 +183,43 @@ def abs_hum(t, rh):
     return es * rh * 2.1674 / (273.15 + t)
 
 
+def gauge(v, lo, hi, step, color, band=None, marks=(), zones=(), label_step=None, fmt=lambda x: f"{x:g}"):
+    """숫자 밑 가로 막대 (눈금 step마다, 숫자는 label_step마다)"""
+    pct = lambda x: (min(max(x, lo), hi) - lo) / (hi - lo) * 100
+    h = '<div class="gauge">'
+    for a, b, c in zones:
+        h += f'<div class="zone" style="left:{pct(a)}%;width:{pct(b) - pct(a)}%;background:{c}"></div>'
+    if band:
+        h += f'<div class="band" style="left:{pct(band[0])}%;width:{pct(band[1]) - pct(band[0])}%"></div>'
+    if v is not None:
+        h += f'<div class="fill" style="width:{pct(v)}%;background:{color}"></div>'
+    for x, c in marks:
+        if x is not None:
+            h += f'<div class="mark" style="left:{pct(x)}%;background:{c}"></div>'
+    n = round((hi - lo) / step)
+    h += "".join(f'<i class="tk" style="left:{i / n * 100}%"></i>' for i in range(n + 1))
+    if v is not None:
+        h += f'<div class="dot" style="left:{pct(v)}%;border-color:{color}"></div>'
+    h += '</div><div class="ticks">'
+    m = round((hi - lo) / (label_step or step))
+    h += "".join(f'<span style="left:{i / m * 100}%">{fmt(lo + i * (label_step or step))}</span>'
+                 for i in range(m + 1))
+    return h + "</div>"
+
+
+SAT20 = 17.3   # 20℃ 공기가 품을 수 있는 최대 물의 양 (g/㎥)
+
+
+def hum20(t, rh):
+    """습도를 20℃ 기준으로 맞춘 % = 절대습도 ÷ 17.3 (실내·외부를 같은 잣대로 비교)"""
+    a = abs_hum(t, rh)
+    return None if a is None else a / SAT20 * 100
+
+
+T_RANGE = dict(lo=-10, hi=30, step=2, label_step=10)   # 실내·외부 온도 막대는 같은 잣대
+PCT = lambda x: f"{int(x)}%"
+
+
 def hum_note(h):
     if h < 30:
         return "건조해요 (기준 30~80%)"
@@ -216,16 +264,24 @@ def now_panel():
 
     st.markdown("**🏫 실내**")
     c1, c2, c3 = st.columns([1.4, 1, 1])
+    ot_v = wx["temp"] if wx and wx["temp"] is not None else None
+    ip = hum20(r["temp"], r["hum"])
+    op = hum20(wx["temp"], wx["hum"]) if wx and wx["temp"] is not None and wx["hum"] is not None else None
     c1.markdown(f'<div class="card"><div class="label">이산화탄소</div>'
-                f'<div class="big">{r["co2"]:,}<span class="unit"> ppm</span></div></div>',
-                unsafe_allow_html=True)
+                f'<div class="big">{r["co2"]:,}<span class="unit"> ppm</span></div>'
+                f'<div class="note">{OPEN_AT:,} 넘으면 열기 · {CLOSE_AT:,} 아래면 닫기</div>'
+                + gauge(r["co2"], 400, 1600, 200, "#E4572E", marks=[(OPEN_AT, "#D64545"), (CLOSE_AT, "#2F6FB0")],
+                        fmt=lambda x: f"{int(x):,}") + '</div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="card"><div class="label">실내 온도</div>'
-                f'<div class="mid">{r["temp"]:.1f}℃</div><div class="note">{temp_note(r["temp"])}</div></div>',
-                unsafe_allow_html=True)
-    c3.markdown(f'<div class="card"><div class="label">실내 습도</div>'
-                f'<div class="mid">{r["hum"]:.0f}%</div>'
-                f'<div class="note">물 {abs_hum(r["temp"], r["hum"]):.1f} g/㎥ · {hum_note(r["hum"])}</div></div>',
-                unsafe_allow_html=True)
+                f'<div class="mid">{r["temp"]:.1f}℃</div><div class="note">{temp_note(r["temp"])}</div>'
+                + gauge(r["temp"], color="#E08A00", band=(18, 20), marks=[(ot_v, "rgba(224,138,0,.9)")], **T_RANGE)
+                + '</div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="card"><div class="label">실내 습도 (20℃ 기준)</div>'
+                f'<div class="gram">{abs_hum(r["temp"], r["hum"]):.1f} g/㎥</div>'
+                f'<div class="mid">{ip:.0f}%</div>'
+                f'<div class="note">상대습도 {r["hum"]:.0f}% · {hum_note(r["hum"])}</div>'
+                + gauge(ip, 0, 100, 20, "#2F6FB0", band=(30, 80), marks=[(op, "rgba(47,111,176,.9)")], fmt=PCT)
+                + '</div>', unsafe_allow_html=True)
 
     when = f"{t:%m월 %d일 %H:%M} 측정"
     if ago >= 5:
@@ -238,24 +294,31 @@ def now_panel():
         st.info("공공데이터 열쇠를 넣으면 외부 미세먼지·온도·습도가 여기 나와요.")
         return
     d1, d2, d3 = st.columns(3)
-    g, gc = pm25_grade(air["pm25"] if air else None)
-    pm = f'{air["pm25"]}' if air and air["pm25"] is not None else "-"
+    pv = air["pm25"] if air else None
+    g, gc = pm25_grade(pv)
+    pm = f'{pv}' if pv is not None else "-"
     d1.markdown(f'<div class="card"><div class="label">초미세먼지</div>'
                 f'<div class="small" style="color:{gc}">{pm}<span class="unit"> ㎍/㎥</span></div>'
                 f'<div class="note">{g} · 미세먼지 {air["pm10"] if air and air["pm10"] is not None else "-"}'
-                f'{" · " + air["time"][-5:] + " 값" if air and air.get("old") else ""}</div></div>',
-                unsafe_allow_html=True)
-    ot = f'{wx["temp"]:.1f}℃' if wx and wx["temp"] is not None else "-"
-    oh = f'{wx["hum"]:.0f}%' if wx and wx["hum"] is not None else "-"
-    diff = (f'실내와 {r["temp"] - wx["temp"]:+.1f}℃ 차이'.replace("+", "")
-            if wx and wx["temp"] is not None else "")
+                f'{" · " + air["time"][-5:] + " 값" if air and air.get("old") else ""}</div>'
+                + gauge(pv, 0, 80, 10, "#7B61C9",
+                        zones=[(0, 15, "rgba(42,157,143,.35)"), (15, 35, "rgba(47,111,176,.35)"),
+                               (35, 75, "rgba(224,138,0,.35)"), (75, 80, "rgba(214,69,69,.4)")])
+                + '</div>', unsafe_allow_html=True)
+    ot = f'{ot_v:.1f}℃' if ot_v is not None else "-"
+    diff = f'실내와 {abs(r["temp"] - ot_v):.1f}℃ 차이' if ot_v is not None else ""
     d2.markdown(f'<div class="card"><div class="label">외부 온도</div>'
-                f'<div class="small">{ot}</div><div class="note">{diff}</div></div>', unsafe_allow_html=True)
-    oa = abs_hum(wx["temp"], wx["hum"]) if wx else None
-    ia = abs_hum(r["temp"], r["hum"])
-    an = (f'물 {oa:.1f} g/㎥ · 실내의 {oa / ia * 100:.0f}%' if oa is not None and ia else "&nbsp;")
-    d3.markdown(f'<div class="card"><div class="label">외부 습도</div>'
-                f'<div class="small">{oh}</div><div class="note">{an}</div></div>', unsafe_allow_html=True)
+                f'<div class="small">{ot}</div><div class="note">{diff}</div>'
+                + gauge(ot_v, color="#E08A00", marks=[(r["temp"], "rgba(224,138,0,.9)")], **T_RANGE)
+                + '</div>', unsafe_allow_html=True)
+    oa = abs_hum(wx["temp"], wx["hum"]) if op is not None else None
+    orh = f'상대습도 {wx["hum"]:.0f}%' if op is not None else ""
+    d3.markdown(f'<div class="card"><div class="label">외부 습도 (20℃ 기준)</div>'
+                f'<div class="gram">{f"{oa:.1f} g/㎥" if oa is not None else "&nbsp;"}</div>'
+                f'<div class="small">{f"{op:.0f}%" if op is not None else "-"}</div>'
+                f'<div class="note">{orh}</div>'
+                + gauge(op, 0, 100, 20, "#2F6FB0", band=(30, 80), marks=[(ip, "rgba(47,111,176,.9)")], fmt=PCT)
+                + '</div>', unsafe_allow_html=True)
     src = []
     if air:
         src.append(f"에어코리아 {STATION} {air['time']}")
