@@ -521,6 +521,83 @@ def day_chart(day):
 
 day_chart(day)
 
+
+# ───────── 요일·시간 패턴: 언제 답답해지나 ─────────
+DAYS = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def indoor_since(since_iso):
+    """실내 기록 전부 (Supabase는 한 번에 1,000줄까지라 나눠서 받음)"""
+    rows, off = [], 0
+    while True:
+        part = get("indoor?select=measured_at,co2&room_id=eq.1"
+                   f"&measured_at=gte.{since_iso.replace('+', '%2B')}"
+                   f"&order=measured_at.asc&limit=1000&offset={off}")
+        rows += part
+        if len(part) < 1000:
+            return rows
+        off += 1000
+
+
+def pattern_panel():
+    since = (datetime.now(KST) - timedelta(days=28)).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        rows = indoor_since(since.isoformat())
+    except Exception:
+        st.error("기록을 불러오지 못했어요.")
+        return
+    df = pd.DataFrame(rows)
+    if len(df) < 20:
+        st.info("기록이 더 쌓이면 요일·시간별 패턴이 나와요.")
+        return
+    t = pd.to_datetime(df["measured_at"]).dt.tz_convert(KST)
+    df = df.assign(요일=t.dt.weekday.map(lambda d: DAYS[d]), 시=t.dt.hour, 날=t.dt.date)
+    g = (df.groupby(["요일", "시"]).co2.agg(평균="mean", 최고="max", 기록="count").reset_index())
+    g["평균"] = g["평균"].round()
+    g["넘음"] = g["평균"] >= OPEN_AT
+    days = [d for d in DAYS if d in set(g["요일"])]
+
+    worst = g.loc[g["평균"].idxmax()]
+    over = g[g["넘음"]]
+    n_days = df["날"].nunique()
+    a, b, c = st.columns(3)
+    a.metric("가장 답답한 때", f"{worst['요일']} {int(worst['시'])}시",
+             help=f"평균 {int(worst['평균']):,}ppm · 최고 {int(worst['최고']):,}ppm")
+    b.metric("평균이 1,000ppm 넘는 칸", f"{len(over)}칸", help="요일 × 시간 칸 중 평균이 학교 기준을 넘는 칸")
+    c.metric("분석한 기록", f"{n_days}일 · {len(df):,}개", help="최근 4주")
+
+    base = alt.Chart(g).encode(
+        x=alt.X("시:O", title="시각", axis=alt.Axis(labelAngle=0, labelExpr="datum.value + '시'", grid=False)),
+        y=alt.Y("요일:N", sort=days, title=None, axis=alt.Axis(grid=False)),
+    )
+    cells = base.mark_rect(cornerRadius=3, stroke=None).encode(
+        color=alt.Color("평균:Q", title="평균 ppm",
+                        scale=alt.Scale(scheme="oranges", domain=[400, 1200], clamp=True),
+                        legend=alt.Legend(orient="bottom", gradientLength=260, values=[400, 600, 800, 1000, 1200])),
+        tooltip=[alt.Tooltip("요일:N"), alt.Tooltip("시:O", title="시"),
+                 alt.Tooltip("평균:Q", title="평균 ppm", format=",.0f"),
+                 alt.Tooltip("최고:Q", title="최고 ppm", format=",.0f"),
+                 alt.Tooltip("기록:Q", title="기록 수")],
+    )
+    marks = base.mark_text(fontSize=11, fontWeight="bold", color="white").encode(
+        text=alt.Text("평균:Q", format=",.0f")).transform_filter(f"datum.평균 >= {OPEN_AT}")
+    chart = (cells + marks).properties(width=640, height=34 * len(days) + 10).configure_view(stroke=None)
+    st.altair_chart(chart, width="stretch")
+
+    tip = (f"**{worst['요일']}요일 {int(worst['시'])}시** 앞 쉬는 시간에 미리 열어 두면 좋아요."
+           if worst["평균"] >= WARN_AT else "아직 기준을 넘는 시간대가 없어요. 지금처럼 닫아 두세요.")
+    st.caption(f"색이 진할수록 이산화탄소가 많아요. 칸 안 숫자 = 평균이 {OPEN_AT:,}ppm을 넘은 시간.  \n"
+               f"💡 {tip}")
+    with st.expander("표로 보기 (요일·시간별)"):
+        st.dataframe(g.rename(columns={"평균": "평균(ppm)", "최고": "최고(ppm)", "기록": "기록 수"})
+                     .drop(columns="넘음"), hide_index=True, width="stretch")
+
+
+st.divider()
+st.subheader("🗓️ 언제 답답해지나 — 요일·시간 패턴")
+pattern_panel()
+
 st.divider()
 st.caption("기준: 학교보건법 시행규칙 — 이산화탄소 1,000ppm 이하, 난방 온도 18\\~20℃, 습도 30\\~80%  \n"
            "외부 공기: 공공데이터포털 — 한국환경공단 에어코리아, 기상청 초단기실황  \n"
