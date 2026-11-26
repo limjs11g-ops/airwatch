@@ -279,6 +279,10 @@ SERIES = [  # 이름, 실내 열, 외부 열, 색, 기준 아래, 기준 위, �
     ("절대습도 (g/㎥) · 공기 1㎥ 속 물의 양", "ah", "ah", "#2F6FB0", None, None, 1),
     ("외부 초미세먼지 (㎍/㎥)", None, "pm25", "#7B61C9", 0, 15, 10),
 ]
+GAP = {  # 실내·외부 차이 글자: 단위, 실내가 클 때, 외부가 클 때
+    "temp": ("℃", "실내가 따뜻", "외부가 따뜻"),
+    "ah": (" g/㎥", "실내가 더 습함", "외부가 더 습함"),
+}
 
 
 def fit(v, min_span):
@@ -337,30 +341,49 @@ def combo_chart(df, out):
             base.mark_point(size=80, opacity=0).encode(y=hy, tooltip=alt.value(None)).add_params(hover),
             base.mark_rule(color="#9CA3AF").transform_filter(hover),
             base.mark_point(size=90, filled=True, color=color).encode(y=hy).transform_filter(hover),
-            base.mark_text(align="left", dx=9, dy=-12, fontSize=15, fontWeight="bold", color=color).encode(
-                y=hy, text=alt.Text(f"{col or 'o_' + oc}:Q", format=",.1~f")).transform_filter(hover),
         ]
-        if col and has_out:
-            layers.append(base.mark_text(align="left", dx=9, dy=12, fontSize=12, color=color, opacity=0.85)
-                          .encode(y=hy, text="t:N").transform_filter(hover)
-                          .transform_filter(f"isValid(datum.o_{oc})")
-                          .transform_calculate(t=f"'외부 ' + format(datum.o_{oc}, '.1f')"))
-        if col == "temp" and has_out:   # 온도: 실내 ↔ 외부 사이를 잇는 막대 + 온도 차이
-            ok = "isValid(datum.o_temp)"
+        label = dict(align="left", dx=9, fontSize=15, fontWeight="bold", color=color)
+        if col and has_out:   # 실내·외부 둘 다: 숫자는 각자 선 위에, 차이는 둘 사이 가운데에
+            unit, warm_in, warm_out = GAP[col]
+            o = f"datum.o_{oc}"
+            ok = f"isValid({o})"
+            up = f"{ok} && {o} > datum.{col}"          # 외부가 위쪽이면 → 외부 글자는 위, 실내 글자는 아래
+            oy = alt.Y(f"o_{oc}:Q", title=None, scale=sc, axis=yax)
             layers += [
-                base.mark_rule(color=color, strokeWidth=3, opacity=0.55).encode(
-                    y=alt.Y("temp:Q", title=None, scale=sc, axis=yax), y2="o_temp:Q")
+                # 실내 숫자: 외부와 안 겹치게 반대쪽에
+                base.mark_text(dy=-12, **label).encode(y=hy, text=alt.Text(f"{col}:Q", format=",.1~f"))
+                .transform_filter(hover).transform_filter(f"!({up})"),
+                base.mark_text(dy=16, **label).encode(y=hy, text=alt.Text(f"{col}:Q", format=",.1~f"))
+                .transform_filter(hover).transform_filter(up),
+                # 실내 ↔ 외부 잇는 막대 + 외부 점 (외부 점선 위)
+                base.mark_rule(color=color, strokeWidth=3, opacity=0.55).encode(y=hy, y2=f"o_{oc}:Q")
                 .transform_filter(hover).transform_filter(ok),
-                base.mark_point(size=70, filled=True, color="white", stroke=color, strokeWidth=2).encode(
-                    y=alt.Y("o_temp:Q", title=None, scale=sc, axis=yax))
+                base.mark_point(size=70, filled=True, color="white", stroke=color, strokeWidth=2).encode(y=oy)
                 .transform_filter(hover).transform_filter(ok),
+                # 외부 숫자: 외부 점선 위의 점 바로 옆
+                base.mark_text(dy=-12, opacity=0.85, **dict(label, fontSize=13, fontWeight="normal"))
+                .encode(y=oy, text="t:N").transform_filter(hover).transform_filter(up)
+                .transform_calculate(t=f"'외부 ' + format({o}, '.1f')"),
+                base.mark_text(dy=16, opacity=0.85, **dict(label, fontSize=13, fontWeight="normal"))
+                .encode(y=oy, text="t:N").transform_filter(hover).transform_filter(f"{ok} && !({up})")
+                .transform_calculate(t=f"'외부 ' + format({o}, '.1f')"),
+                # 차이: 실내와 외부의 정확히 가운데 높이, 막대 왼쪽
                 base.mark_text(align="right", dx=-10, fontSize=13, fontWeight="bold", color=color).encode(
                     y=alt.Y("mid:Q", title=None, scale=sc, axis=yax), text="gap:N")
                 .transform_filter(hover).transform_filter(ok)
-                .transform_calculate(mid="(datum.temp + datum.o_temp) / 2",
-                                     gap="'차이 ' + format(abs(datum.temp - datum.o_temp), '.1f') + '℃ '"
-                                         " + (datum.temp >= datum.o_temp ? '(실내가 따뜻)' : '(외부가 따뜻)')"),
+                .transform_calculate(mid=f"(datum.{col} + {o}) / 2",
+                                     gap=f"'차이 ' + format(abs(datum.{col} - {o}), '.1f') + '{unit} '"
+                                         f" + (datum.{col} >= {o} ? '({warm_in})' : '({warm_out})')"),
             ]
+        elif col:             # 실내만 (이산화탄소)
+            layers.append(base.mark_text(dy=-12, **label).encode(
+                y=hy, text=alt.Text(f"{col}:Q", format=",.1~f")).transform_filter(hover))
+        else:                 # 외부만 (초미세먼지): 숫자 + 등급을 선 위 점 옆에
+            layers.append(base.mark_text(dy=-12, **label).encode(y=hy, text="t:N")
+                          .transform_filter(hover).transform_filter(f"isValid(datum.o_{oc})")
+                          .transform_calculate(t=f"format(datum.o_{oc}, '.0f') + ' · ' + "
+                                                 f"(datum.o_{oc} <= 15 ? '좋음' : datum.o_{oc} <= 35 ? '보통' : "
+                                                 f"datum.o_{oc} <= 75 ? '나쁨' : '매우 나쁨')"))
         if i == 0:
             layers.append(base.mark_text(align="left", dx=9, dy=-30, fontSize=12, color="#6B7280").encode(
                 y=hy, text=alt.Text("시각:T", format="%H:%M")).transform_filter(hover))
