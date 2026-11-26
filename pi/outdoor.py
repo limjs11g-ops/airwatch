@@ -4,6 +4,8 @@
 #
 #   python3 ~/outdoor.py          최근 24시간 저장
 #   python3 ~/outdoor.py --month  처음 한 번: 지난 한 달 미세먼지까지 채우기
+#   python3 ~/outdoor.py --past   처음 한 번: 기록 시작일 ~ 어제 온도·습도(대전 관측소) + 한 달 미세먼지
+#                                 (이미 저장된 시각은 건드리지 않음)
 #
 # 열쇠 파일 두 개 (코드에는 비밀을 쓰지 않는다)
 #   ~/supabase_key.txt     기록기와 같은 Supabase 열쇠 (이미 있음)
@@ -20,6 +22,8 @@ from pathlib import Path
 STATION = "옥천읍"      # 에어코리아 측정소 (웹과 같게)
 NX, NY = 71, 100        # 기상청 격자 (웹과 같게)
 CLOUD_URL = "https://tprfmmompqsjzphfvfyw.supabase.co"
+ASOS_STN = 133          # 지난 날짜용 기상청 종관 관측소 (133 = 대전, 옥천에서 가장 가까움)
+PAST_FROM = "2026-11-09"   # 지난 날짜 채우기 시작일 (실내 기록 시작일)
 # ─────────────────────────────────────
 
 KST = timezone(timedelta(hours=9))
@@ -64,6 +68,35 @@ def weather(hours=24):
     return out
 
 
+def asos_past(start, end):
+    """기상청 종관(ASOS) 시간자료: start ~ end 날짜의 1시간 온도·습도 (어제까지만 나옴)"""
+    out, page = {}, 1
+    while True:
+        body = get_json("https://apis.data.go.kr/1360000/AsosHourlyInfoService/getWthrDataList",
+                        {"pageNo": page, "numOfRows": 999, "dataType": "JSON", "dataCd": "ASOS",
+                         "dateCd": "HR", "startDt": f"{start:%Y%m%d}", "startHh": "00",
+                         "endDt": f"{end:%Y%m%d}", "endHh": "23", "stnIds": ASOS_STN})
+        b = body["response"]["body"]
+        items = b["items"]["item"] if b.get("items") else []
+        for it in items:
+            t = datetime.strptime(it["tm"], "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+            num = lambda v: float(v) if str(v).strip() not in ("", "None") else None
+            out[t] = {"temp": num(it.get("ta")), "hum": num(it.get("hm"))}
+        if page * 999 >= int(b.get("totalCount", 0)) or not items:
+            return out
+        page += 1
+
+
+def saved_times(start):
+    """Supabase 에 이미 온도가 저장된 시각들 (지난 날짜 채울 때 덮어쓰지 않으려고)"""
+    req = urllib.request.Request(
+        f"{CLOUD_URL}/rest/v1/outdoor?select=measured_at&temp=not.is.null"
+        f"&measured_at=gte.{urllib.parse.quote(start.isoformat())}&limit=100000",
+        headers={"apikey": SB_KEY})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return {datetime.fromisoformat(x["measured_at"]).astimezone(KST) for x in json.loads(r.read())}
+
+
 def dust(month=False):
     """에어코리아 측정소 값: 하루(24줄) 또는 한 달(약 720줄)"""
     body = get_json("https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
@@ -98,8 +131,20 @@ def main():
     if not SB_KEY or not DATA_KEY:
         print("열쇠 파일이 없어요: ~/supabase_key.txt · ~/data_go_kr_key.txt", flush=True)
         return
-    month = "--month" in sys.argv
-    w = weather()
+    past = "--past" in sys.argv
+    month = past or "--month" in sys.argv
+    w = {}
+    if past:   # 지난 날짜: 대전 관측소 값 (이미 저장된 옥천 값은 그대로 둠)
+        start = datetime.strptime(PAST_FROM, "%Y-%m-%d").replace(tzinfo=KST)
+        end = datetime.now(KST) - timedelta(days=1)
+        try:
+            have = saved_times(start)
+            old = asos_past(start, end)
+            w = {t: v for t, v in old.items() if t not in have}
+            print(f"지난 날짜 온도·습도 {len(w)}시간 채움 (이미 있던 {len(old) - len(w)}시간은 그대로)", flush=True)
+        except Exception as e:
+            print("기상청 지난 자료 실패:", e, flush=True)
+    w.update(weather())    # 최근 24시간은 옥천 값이 우선
     try:
         d = dust(month)
     except Exception as e:
