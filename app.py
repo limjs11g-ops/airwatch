@@ -48,6 +48,16 @@ st.markdown("""
              border: 3px solid; transform: translate(-50%, -50%);}
 .ticks {position: relative; height: 14px; margin-top: 7px; font-size: 10px; color: #6B7280;}
 .ticks span {position: absolute; transform: translateX(-50%); white-space: nowrap;}
+.rng {position: relative; height: 13px; border-radius: 7px; background: rgba(128,128,128,.22); margin-top: 30px;}
+.rng .band {position: absolute; top: -3px; bottom: -3px; border-radius: 3px; background: rgba(42,157,143,.3);}
+.rng .mark {position: absolute; top: -5px; bottom: -5px; width: 2px;}
+.rng .tk {position: absolute; bottom: -6px; width: 1px; height: 5px; background: rgba(128,128,128,.7);}
+.rng .span {position: absolute; top: 1px; bottom: 1px; border-radius: 6px;}
+.rng .span.out {top: 3px; bottom: 3px; opacity: .75;
+  background-image: repeating-linear-gradient(90deg, transparent 0 5px, rgba(0,0,0,.35) 5px 8px);}
+.rng .end {position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: #fff;
+           border: 3px solid; transform: translate(-50%, -50%);}
+.rng .tag {position: absolute; top: -22px; font-size: 11px; font-weight: 700; white-space: nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,6 +210,37 @@ def gauge(v, lo, hi, step, color, band=None, marks=(), zones=(), label_step=None
     h += "".join(f'<i class="tk" style="left:{i / n * 100}%"></i>' for i in range(n + 1))
     if v is not None:
         h += f'<div class="dot" style="left:{pct(v)}%;border-color:{color}"></div>'
+    h += '</div><div class="ticks">'
+    m = round((hi - lo) / (label_step or step))
+    h += "".join(f'<span style="left:{i / m * 100}%">{fmt(lo + i * (label_step or step))}</span>'
+                 for i in range(m + 1))
+    return h + "</div>"
+
+
+def range_bar(lo, hi, step, color, inner, outer=None, band=None, marks=(), label_step=None,
+              fmt=lambda x: f"{x:g}", tag=lambda x: f"{x:g}"):
+    """하루 동안 오르내린 폭 막대: 실내(굵게, 양 끝 동그라미) + 외부(얇은 줄무늬)"""
+    pct = lambda x: (min(max(x, lo), hi) - lo) / (hi - lo) * 100
+    h = '<div class="rng">'
+    if band:
+        h += f'<div class="band" style="left:{pct(band[0])}%;width:{pct(band[1]) - pct(band[0])}%"></div>'
+    for x, c in marks:
+        h += f'<div class="mark" style="left:{pct(x)}%;background:{c}"></div>'
+    n = round((hi - lo) / step)
+    h += "".join(f'<i class="tk" style="left:{i / n * 100}%"></i>' for i in range(n + 1))
+    if outer and None not in outer:
+        a, b = pct(outer[0]), pct(outer[1])
+        h += f'<div class="span out" style="left:{a}%;width:{max(b - a, 1)}%;background-color:{color}"></div>'
+    a, b = pct(inner[0]), pct(inner[1])
+    h += (f'<div class="span" style="left:{a}%;width:{max(b - a, 0.5)}%;background:{color}"></div>'
+          f'<div class="end" style="left:{a}%;border-color:{color}"></div>'
+          f'<div class="end" style="left:{b}%;border-color:{color}"></div>')
+    if b - a < 16:   # 좁으면 가운데에 한 번만
+        h += (f'<div class="tag" style="left:{(a + b) / 2}%;transform:translateX(-50%);color:{color}">'
+              f'{tag(inner[0])} ~ {tag(inner[1])}</div>')
+    else:
+        h += (f'<div class="tag" style="left:{a}%;transform:translateX(-90%);color:{color}">{tag(inner[0])}</div>'
+              f'<div class="tag" style="left:{b}%;transform:translateX(-10%);color:{color}">{tag(inner[1])}</div>')
     h += '</div><div class="ticks">'
     m = round((hi - lo) / (label_step or step))
     h += "".join(f'<span style="left:{i / m * 100}%">{fmt(lo + i * (label_step or step))}</span>'
@@ -562,11 +603,42 @@ def day_chart(day):
         df = pd.merge_asof(df.sort_values("시각"), o.sort_values("시각"), on="시각",
                            direction="backward", tolerance=pd.Timedelta("90min"))
 
+    # 하루 동안 오르내린 폭 (막대 잣대는 실시간 칸과 같음)
+    gap = df["시각"].diff().shift(-1).dt.total_seconds().div(60).clip(upper=60).fillna(0)
+    over_min = int(gap[df.co2 >= OPEN_AT].sum())
+    peak_at = df.loc[df.co2.idxmax(), "시각"]
+    df["h20"] = df["ah"] / SAT20 * 100
+    o_t = o_h = None
+    if not out.empty:
+        ot, oah = out["temp"].dropna(), out["ah"].dropna() / SAT20 * 100
+        o_t = (ot.min(), ot.max()) if len(ot) else None
+        o_h = (oah.min(), oah.max()) if len(oah) else None
+    it, ih = (df.temp.min(), df.temp.max()), (df.h20.min(), df.h20.max())
+    card = lambda label, big, unit, sub, bar: (
+        f'<div class="card"><div class="label">{label}</div>'
+        f'<div class="mid">{big}<span class="unit">{unit}</span></div>'
+        f'<div class="note">{sub}</div>{bar}</div>')
     a, b, c = st.columns(3)
-    a.metric("이산화탄소 최고", f"{df.co2.max():,} ppm", help=f"{df.loc[df.co2.idxmax(), '시각']:%H:%M}")
-    b.metric("온도 범위", f"{df.temp.min():.1f}~{df.temp.max():.1f}℃")
-    c.metric("습도 범위", f"{df.hum.min():.0f}~{df.hum.max():.0f}%",
-             help=f"절대습도 {df.ah.min():.1f}~{df.ah.max():.1f} g/㎥")
+    a.markdown(card("이산화탄소 최고", f"{df.co2.max():,}", " ppm",
+                    f"{df.co2.min():,} ~ {df.co2.max():,} · 최고 {peak_at:%H:%M}<br>"
+                    f"{OPEN_AT:,} 넘은 시간 {over_min}분",
+                    range_bar(400, 1600, 200, "#E4572E", (df.co2.min(), df.co2.max()),
+                              marks=[(OPEN_AT, "#D64545"), (CLOSE_AT, "#2F6FB0")],
+                              fmt=lambda x: f"{int(x):,}", tag=lambda x: f"{int(x):,}")),
+               unsafe_allow_html=True)
+    b.markdown(card("온도 범위", f"{it[0]:.1f}~{it[1]:.1f}", "℃",
+                    f"하루 폭 {it[1] - it[0]:.1f}℃<br>"
+                    + (f"외부 {o_t[0]:.1f}~{o_t[1]:.1f}℃ (폭 {o_t[1] - o_t[0]:.1f}℃)" if o_t else "외부 기록 없음"),
+                    range_bar(color="#E08A00", inner=it, outer=o_t, band=(18, 20),
+                              tag=lambda x: f"{x:.1f}", **T_RANGE)),
+               unsafe_allow_html=True)
+    c.markdown(card("습도 범위 (20℃ 기준)", f"{ih[0]:.0f}~{ih[1]:.0f}", "%",
+                    f"{df.ah.min():.1f}~{df.ah.max():.1f}&nbsp;g/㎥ · 상대 {df.hum.min():.0f}~{df.hum.max():.0f}%<br>"
+                    + (f"외부 {o_h[0]:.0f}~{o_h[1]:.0f}%" if o_h else "외부 기록 없음"),
+                    range_bar(0, 100, 20, "#2F6FB0", ih, outer=o_h, band=(30, 80), fmt=PCT,
+                              tag=lambda x: f"{x:.0f}%")),
+               unsafe_allow_html=True)
+    st.caption("막대 = 하루 동안 오르내린 폭 (굵은 막대 = 실내, 양 끝 = 최저·최고 · 얇은 줄무늬 = 외부)")
 
     combo_chart(df, out)
     st.caption("**실선 = 실내 · 점선 = 외부** (기상청·에어코리아, 1시간마다 · 지난 날짜 온도·습도는 기상청 대전 관측소)  \n"
